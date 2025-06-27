@@ -21,7 +21,7 @@ app.get('/', (req, res) => {
     res.send('<html><body><h1>backend</h1></body></html>');
 });
 
-// API Routes (unchanged)
+// API Routes with /api prefix
 app.post('/api/auth/signup', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
@@ -163,7 +163,7 @@ app.post('/api/cards/activate/:cardId', (req, res) => {
     }
 });
 
-app.get('/admin', (req, res) => {
+app.get('/api/admin', (req, res) => {
     if (req.query.password === process.env.ADMIN_PASSWORD) {
         res.send(`
             <html>
