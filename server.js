@@ -37,6 +37,8 @@ async function initializeDataFile() {
     await fs.access(dataPath);
   } catch (err) {
     if (err.code === 'ENOENT') {
+      // Create data directory if it doesn't exist
+      await fs.mkdir(path.dirname(dataPath), { recursive: true });
       await fs.writeFile(dataPath, JSON.stringify({ users: [], cards: [], activationLogs: [] }, null, 2));
       console.log('Initialized data.json');
     } else {
@@ -46,7 +48,7 @@ async function initializeDataFile() {
 }
 
 // Call initialization before starting the server
-initializeDataFile().catch(err => console.error('Initialization error:', err));
+initializeDataFile().catch(err => console.error('Initialization error:', err.message));
 
 // JWT Authentication Middleware
 const authMiddleware = (req, res, next) => {
