@@ -9,8 +9,24 @@ app.use(express.json());
 // JWT Secret (should match frontend's expectation)
 const JWT_SECRET = 'your-secure-secret-key'; // Update this for production
 
-// In-memory data store (replace with a database in production)
-let cards = JSON.parse(fs.readFileSync('data.json', 'utf8'));
+// Initialize or load data.json
+let cards = {};
+try {
+    cards = JSON.parse(fs.readFileSync('data.json', 'utf8'));
+    if (!cards.users || !cards.cards || !cards.logs) {
+        cards = { users: [], cards: [], logs: [] };
+        fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
+    }
+} catch (error) {
+    if (error.code === 'ENOENT') {
+        cards = { users: [], cards: [], logs: [] };
+        fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
+        console.log('Created data.json with initial structure.');
+    } else {
+        console.error('Error reading data.json:', error);
+        process.exit(1);
+    }
+}
 
 // Middleware to verify token
 const authenticateToken = (req, res, next) => {
@@ -66,7 +82,7 @@ app.get('/api/cards', authenticateToken, (req, res) => {
     res.json(cards.cards);
 });
 
-// Delete card route (added)
+// Delete card route
 app.delete('/api/cards/:cardId', authenticateToken, (req, res) => {
     const cardId = req.params.cardId;
     const initialLength = cards.cards.length;
