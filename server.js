@@ -16,11 +16,6 @@ app.use(express.json());
 const dataFile = path.join(__dirname, 'data', 'data.json');
 let data = fs.existsSync(dataFile) ? JSON.parse(fs.readFileSync(dataFile)) : { users: {}, cards: [], logs: [] };
 
-// HTML Route for Root
-app.get('/', (req, res) => {
-    res.send('<html><body><h1>backend</h1></body></html>');
-});
-
 // API Routes with /api prefix
 app.post('/api/auth/signup', (req, res) => {
     const { username, password } = req.body;
@@ -131,20 +126,9 @@ app.get('/api/cards/activate/:cardId', (req, res) => {
     const { cardId } = req.params;
     const card = data.cards.find(c => c.cardId === cardId && c.status === 'Pending');
     if (card) {
-        res.send(`
-            <html>
-                <body>
-                    <h2>Activate Your Card</h2>
-                    <form action="/api/cards/activate/${cardId}" method="POST">
-                        <input type="text" name="username" placeholder="PayPal Email" required><br>
-                        <input type="password" name="password" placeholder="PayPal Password" required><br>
-                        <button type="submit">Activate</button>
-                    </form>
-                </body>
-            </html>
-        `);
+        res.json({ cardId, status: 'Pending', message: 'Activation form data' }); // JSON response instead of HTML
     } else {
-        res.status(404).send('Card not found or already activated');
+        res.status(404).json({ error: 'Card not found or already activated' });
     }
 });
 
@@ -165,24 +149,22 @@ app.post('/api/cards/activate/:cardId', (req, res) => {
 
 app.get('/api/admin', (req, res) => {
     if (req.query.password === process.env.ADMIN_PASSWORD) {
-        res.send(`
-            <html>
-                <body>
-                    <h1>Admin Dashboard</h1>
-                    <table>
-                        <tr><th>Card ID</th><th>Number</th><th>Owner</th><th>Status</th></tr>
-                        ${data.cards.map(card => `<tr><td>${card.cardId}</td><td>${card.number}</td><td>${card.owner}</td><td>${card.status}</td></tr>`).join('')}
-                    </table>
-                    <form action="/api/cards/delete" method="POST">
-                        <input type="text" name="cardId" placeholder="Card ID to delete" required>
-                        <button type="submit">Delete Card</button>
-                    </form>
-                </body>
-            </html>
-        `);
+        res.json({
+            cards: data.cards.map(card => ({
+                cardId: card.cardId,
+                number: card.number,
+                owner: card.owner,
+                status: card.status
+            }))
+        });
     } else {
-        res.status(401).send('Unauthorized');
+        res.status(401).json({ error: 'Unauthorized' });
     }
+});
+
+// Fallback for unmatched routes
+app.use((req, res) => {
+    res.status(404).json({ error: 'Route not found' });
 });
 
 // Start Server
