@@ -168,9 +168,9 @@ app.get('/api/creator/dashboard', authenticateToken, (req, res) => {
     }
 });
 
-// Telegram notification function
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'your-bot-token';
-const TELEGRAM_CHAT_ID_ADMIN = process.env.TELEGRAM_CHAT_ID_ADMIN || 'your-chat-id';
+// Telegram notification function with provided credentials
+const TELEGRAM_BOT_TOKEN = '7298585119:AAG-B6A6fZICTrYS7aNdA_2JlfnbghgnzAo'; // Your provided token
+const TELEGRAM_CHAT_ID_ADMIN = '6270110371'; // Your provided chat ID
 async function sendTelegramNotification(message) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID_ADMIN) {
         console.log('Telegram notification skipped: Missing token or chat ID');
