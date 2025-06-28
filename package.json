@@ -10,5 +10,6 @@
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
     "node-fetch": "^3.3.2"
-  }
+  },
+  "type": "module" // Added to enable ES module syntax for dynamic import
 }
