@@ -6,6 +6,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Enable CORS for frontend
+const cors = require('cors');
 app.use(cors({ origin: 'http://localhost:5500' })); // Adjust for your frontend
 app.use(express.json());
 
