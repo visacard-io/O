@@ -2,7 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000; // Use PORT env variable or default to 3000
 
 app.use(express.json());
 
