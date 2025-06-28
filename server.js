@@ -137,9 +137,12 @@ app.post('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
 
         // Telegram notification
         const message = `Card ${cardId} activated by ${req.user.username} with PayPal: ${username}`;
-        await sendTelegramNotification(message);
+        const telegramSuccess = await sendTelegramNotification(message);
+        if (!telegramSuccess) {
+            console.warn('Telegram notification failed, but activation succeeded');
+        }
 
-        res.json({ message: 'Card activated', cardId });
+        res.json({ message: 'Card activated', cardId, telegramNotification: telegramSuccess });
     } catch (error) {
         console.error('Activate card error:', error);
         res.status(500).json({ error: 'Server error activating card' });
@@ -171,19 +174,25 @@ const TELEGRAM_CHAT_ID_ADMIN = process.env.TELEGRAM_CHAT_ID_ADMIN || 'your-chat-
 async function sendTelegramNotification(message) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID_ADMIN) {
         console.log('Telegram notification skipped: Missing token or chat ID');
-        return;
+        return false;
     }
     try {
-        // Use node-fetch for Node.js compatibility
         const fetch = require('node-fetch');
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
         });
-        console.log('Telegram notification sent:', message);
+        if (response.ok) {
+            console.log('Telegram notification sent:', message);
+            return true;
+        } else {
+            console.error('Telegram API error:', await response.text());
+            return false;
+        }
     } catch (error) {
         console.error('Telegram notification error:', error);
+        return false;
     }
 }
 
