@@ -4,6 +4,10 @@ const fs = require('fs');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Enable CORS for frontend
+const cors = require('cors');
+app.use(cors({ origin: 'http://localhost:5500' })); // Adjust origin for your frontend
+
 app.use(express.json());
 
 // Data file initialization with error handling
@@ -31,11 +35,6 @@ const authenticateToken = (req, res, next) => {
         next();
     });
 };
-
-// Custom 404 handler to return JSON
-app.use((req, res, next) => {
-    res.status(404).json({ error: 'Route not found' });
-});
 
 // Authentication routes
 app.post('/api/auth/signup', (req, res) => {
@@ -175,6 +174,8 @@ async function sendTelegramNotification(message) {
         return;
     }
     try {
+        // Use node-fetch for Node.js compatibility
+        const fetch = require('node-fetch');
         await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -190,6 +191,11 @@ async function sendTelegramNotification(message) {
 app.use((err, req, res, next) => {
     console.error('Global error:', err.stack);
     res.status(500).json({ error: 'Internal server error' });
+});
+
+// Custom 404 handler (place after all routes)
+app.use((req, res) => {
+    res.status(404).json({ error: 'Route not found' });
 });
 
 app.listen(port, () => {
