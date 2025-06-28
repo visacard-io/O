@@ -1,13 +1,13 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
-const fetch = require('node-fetch');
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args)); // Proper async import
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Enable CORS for frontend
 const cors = require('cors');
-app.use(cors({ origin: 'https://o-448v.onrender.com' })); // Updated for deployed frontend
+app.use(cors({ origin: 'https://o-448v.onrender.com' })); // Matches frontend URL
 app.use(express.json());
 
 // Data file initialization
@@ -40,26 +40,32 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// Telegram notification function with forced test
-async function sendTelegramNotification(message) {
-    try {
-        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
-        });
-        if (response.ok) {
-            console.log('Telegram notification sent:', message);
-            return true;
-        } else {
-            const errorText = await response.text();
-            console.error('Telegram API error:', errorText);
-            return false;
+// Telegram notification function with retry
+async function sendTelegramNotification(message, retries = 3) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const response = await (await fetch)(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
+            });
+            if (response.ok) {
+                console.log(`Telegram notification sent (Attempt ${attempt}): ${message}`);
+                return true;
+            } else {
+                const errorText = await response.text();
+                console.error(`Telegram API error (Attempt ${attempt}): ${errorText}`);
+            }
+        } catch (error) {
+            console.error(`Telegram notification error (Attempt ${attempt}): ${error.message}`);
         }
-    } catch (error) {
-        console.error('Telegram notification error:', error.message);
-        return false;
+        if (attempt < retries) {
+            console.log(`Retrying (${attempt + 1}/${retries}) in 2 seconds...`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+        }
     }
+    console.error(`Failed to send notification after ${retries} attempts.`);
+    return false;
 }
 
 // Force a test notification on server start
