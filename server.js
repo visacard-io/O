@@ -1,32 +1,56 @@
-const express = require('express');
-const jwt = require('jsonwebtoken');
-const fs = require('fs');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args)); // Proper async import
+// server.js
+import express from 'express';
+import jwt from 'jsonwebtoken';
+import fs from 'fs';
+import { Telegraf } from 'telegraf';
+import cors from 'cors';
+
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Enable CORS for frontend
-const cors = require('cors');
-app.use(cors({ origin: 'https://o-448v.onrender.com' })); // Matches frontend URL
+app.use(cors({ origin: 'https://o-448v.onrender.com' }));
 app.use(express.json());
 
 // Data file initialization
 const dataFile = 'data.json';
 let data = { users: [], cards: [], logs: [] };
-try {
-    if (fs.existsSync(dataFile)) {
-        data = JSON.parse(fs.readFileSync(dataFile));
-    } else {
+function loadData() {
+    try {
+        if (fs.existsSync(dataFile)) {
+            data = JSON.parse(fs.readFileSync(dataFile));
+        } else {
+            fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+        }
+    } catch (error) {
+        console.error('Error loading data.json:', error);
         fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
     }
-} catch (error) {
-    console.error('Error loading data.json:', error);
-    fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
 }
+loadData();
 
-// Telegram credentials
+// Telegram setup
 const TELEGRAM_BOT_TOKEN = '7298585119:AAG-B6A6fZICTrYS7aNdA_2JlfnbghgnzAo';
 const TELEGRAM_CHAT_ID_ADMIN = '6270110371';
+const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
+
+async function sendTelegramNotification(message) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            await bot.telegram.sendMessage(TELEGRAM_CHAT_ID_ADMIN, message);
+            console.log(`Telegram notification sent (Attempt ${attempt}): ${message}`);
+            return true;
+        } catch (error) {
+            console.error(`Telegram notification error (Attempt ${attempt}): ${error.message}`);
+            if (attempt < 3) {
+                console.log(`Retrying (${attempt + 1}/3) in 2 seconds...`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+    }
+    console.error('Failed to send Telegram notification after 3 attempts.');
+    return false;
+}
 
 // Middleware to verify token
 const authenticateToken = (req, res, next) => {
@@ -40,35 +64,7 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// Telegram notification function with retry
-async function sendTelegramNotification(message, retries = 3) {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            const response = await (await fetch)(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_ADMIN, text: message })
-            });
-            if (response.ok) {
-                console.log(`Telegram notification sent (Attempt ${attempt}): ${message}`);
-                return true;
-            } else {
-                const errorText = await response.text();
-                console.error(`Telegram API error (Attempt ${attempt}): ${errorText}`);
-            }
-        } catch (error) {
-            console.error(`Telegram notification error (Attempt ${attempt}): ${error.message}`);
-        }
-        if (attempt < retries) {
-            console.log(`Retrying (${attempt + 1}/${retries}) in 2 seconds...`);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
-        }
-    }
-    console.error(`Failed to send notification after ${retries} attempts.`);
-    return false;
-}
-
-// Force a test notification on server start
+// Test notification on startup
 app.listen(port, async () => {
     console.log(`Server running on port ${port}`);
     const testMessage = 'Server started successfully - Test notification from https://o-448v.onrender.com';
