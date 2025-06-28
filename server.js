@@ -7,7 +7,7 @@ const port = process.env.PORT || 3000;
 
 // Enable CORS for frontend
 const cors = require('cors');
-app.use(cors({ origin: 'http://localhost:5500' })); // Adjust for your frontend
+app.use(cors({ origin: 'https://o-448v.onrender.com' })); // Updated for deployed frontend
 app.use(express.json());
 
 // Data file initialization
@@ -40,7 +40,7 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// Telegram notification function
+// Telegram notification function with forced test
 async function sendTelegramNotification(message) {
     try {
         const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -57,10 +57,20 @@ async function sendTelegramNotification(message) {
             return false;
         }
     } catch (error) {
-        console.error('Telegram notification error:', error);
+        console.error('Telegram notification error:', error.message);
         return false;
     }
 }
+
+// Force a test notification on server start
+app.listen(port, async () => {
+    console.log(`Server running on port ${port}`);
+    const testMessage = 'Server started successfully - Test notification from https://o-448v.onrender.com';
+    const success = await sendTelegramNotification(testMessage);
+    if (!success) {
+        console.error('Failed to send test notification. Check bot token, chat ID, and network connectivity.');
+    }
+});
 
 // Authentication routes
 app.post('/api/auth/signup', async (req, res) => {
@@ -200,10 +210,6 @@ app.use((err, req, res, next) => {
 
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found' });
-});
-
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
 });
 
 process.on('SIGTERM', () => {
