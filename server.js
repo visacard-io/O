@@ -78,7 +78,7 @@ app.listen(port, async () => {
 });
 
 // Authentication routes
-app.post('/api/auth/signup', authenticateToken, async (req, res) => {
+app.post('/api/auth/signup', (req, res) => { // Removed authenticateToken
     try {
         const { username, password } = req.body;
         if (!username || !password || !/^[a-zA-Z0-9@.]+$/.test(username)) {
@@ -98,7 +98,7 @@ app.post('/api/auth/signup', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/auth/login', (req, res) => { // Removed authenticateToken here
+app.post('/api/auth/login', (req, res) => { // Already public
     try {
         const { username, password } = req.body;
         const user = data.users.find(u => u.username === username && u.password === password);
