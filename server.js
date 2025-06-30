@@ -127,7 +127,9 @@ app.post('/api/cards/generate', authenticateToken, (req, res) => {
             return res.status(400).json({ error: 'Invalid card details' });
         }
         const cardId = Date.now().toString();
-        const card = { cardId, name, expDate, amount, number: '4111-1111-1111-1111', cvv: '123', user: req.user.username, status: 'pending' };
+        // Generate a random 16-digit card number
+        const randomCardNumber = Array.from({ length: 16 }, () => Math.floor(Math.random() * 10)).join('');
+        const card = { cardId, name, expDate, amount, number: randomCardNumber, cvv: '123', user: req.user.username, status: 'pending' };
         data.cards.push(card);
         fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
         res.status(201).json({ cardId });
